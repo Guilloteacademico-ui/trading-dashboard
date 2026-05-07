@@ -11,29 +11,25 @@ st_autorefresh(interval=60000, key="refresh")
 st.set_page_config(layout="wide")
 
 # -------------------
-# ESTILO (Wallbit/Bloomberg)
+# ESTILO
 # -------------------
 st.markdown("""
 <style>
-body {
-    background-color: #0e1117;
-    color: white;
-}
-.metric-card {
-    background-color: #151a23;
-    padding: 15px;
-    border-radius: 12px;
-    box-shadow: 0px 0px 10px rgba(0,0,0,0.5);
-}
-.green { color: #00ff9c; }
-.red { color: #ff4b4b; }
+body { background-color: #0e1117; color: white; }
+.block-container { padding-top: 2rem; }
 </style>
 """, unsafe_allow_html=True)
 
 # -------------------
 # CONFIG
 # -------------------
-TICKERS = ["C", "GOLD", "CMCSA", "BTG", "ONC"]
+TICKERS = [
+    "AAPL","MSFT","NVDA","AMZN","META",
+    "TSLA","AMD","GOOGL","NFLX","BABA",
+    "JPM","XOM","CVX","BA","DIS",
+    "UBER","COIN","PLTR","SHOP","SNOW"
+]
+
 CAPITAL = 10000
 RIESGO = 0.01
 
@@ -51,11 +47,10 @@ def get_data(ticker):
         if isinstance(df.columns, pd.MultiIndex):
             df.columns = df.columns.get_level_values(0)
 
-        df = df[["Open", "High", "Low", "Close", "Volume"]]
-        df = df.astype(float)
+        df = df[["Open","High","Low","Close","Volume"]].astype(float)
         df.dropna(inplace=True)
 
-        if len(df) < 30:
+        if len(df) < 50:
             return None
 
         return df
@@ -69,29 +64,52 @@ def add_indicators(df):
     df['EMA20'] = df['Close'].ewm(span=20).mean()
     df['EMA50'] = df['Close'].ewm(span=50).mean()
 
-    high_low = df['High'] - df['Low']
-    high_close = (df['High'] - df['Close'].shift()).abs()
-    low_close = (df['Low'] - df['Close'].shift()).abs()
+    # ATR manual
+    hl = df['High'] - df['Low']
+    hc = (df['High'] - df['Close'].shift()).abs()
+    lc = (df['Low'] - df['Close'].shift()).abs()
 
-    tr = pd.concat([high_low, high_close, low_close], axis=1).max(axis=1)
+    tr = pd.concat([hl, hc, lc], axis=1).max(axis=1)
     df['ATR'] = tr.rolling(14).mean()
+
+    # Momentum
+    df['RET_5'] = df['Close'].pct_change(5)
 
     return df
 
 # -------------------
-# SEÑALES
+# SCORING (clave)
 # -------------------
-def get_signal(df):
-    last = df.iloc[-1]
-    prev = df.iloc[-2]
+def score_setup(df):
+    try:
+        last = df.iloc[-1]
+        prev = df.iloc[-2]
 
-    if last['EMA20'] > last['EMA50'] and last['Close'] < last['EMA20']:
-        return "PULLBACK"
+        score = 0
+        signal = "NEUTRAL"
 
-    if last['Close'] > prev['High']:
-        return "BREAKOUT"
+        # tendencia
+        if last['EMA20'] > last['EMA50']:
+            score += 2
 
-    return "NEUTRAL"
+        # pullback
+        if last['Close'] < last['EMA20']:
+            score += 2
+            signal = "PULLBACK"
+
+        # breakout
+        if last['Close'] > prev['High']:
+            score += 3
+            signal = "BREAKOUT"
+
+        # momentum
+        if last['RET_5'] > 0:
+            score += 1
+
+        return score, signal
+
+    except:
+        return 0, "NEUTRAL"
 
 # -------------------
 # RIESGO
@@ -103,100 +121,79 @@ def calcular_trade(precio, atr):
     stop = precio - (1.2 * atr)
     riesgo = precio - stop
 
-    capital_riesgo = CAPITAL * RIESGO
-    size = capital_riesgo / riesgo
-
-    return round(stop, 2), max(1, int(size))
+    size = (CAPITAL * RIESGO) / riesgo
+    return round(stop,2), int(max(1, size))
 
 # -------------------
-# SIDEBAR
+# UI
 # -------------------
-st.sidebar.title("📊 Trading Desk")
+st.title("📊 Scanner de Trading (Top Oportunidades)")
 
-st.sidebar.markdown("### Capital")
-st.sidebar.write(f"${CAPITAL:,.0f}")
-
-st.sidebar.markdown("### Riesgo por trade")
-st.sidebar.write(f"{RIESGO*100}%")
+results = []
 
 # -------------------
-# HEADER
+# SCAN
 # -------------------
-st.title("📈 Trading Dashboard Pro")
+for ticker in TICKERS:
+    df = get_data(ticker)
 
-# -------------------
-# CARDS SUPERIORES
-# -------------------
-cols = st.columns(len(TICKERS))
+    if df is None:
+        continue
 
-signals_log = []
+    df = add_indicators(df)
 
-for i, ticker in enumerate(TICKERS):
-    with cols[i]:
-        df = get_data(ticker)
+    score, signal = score_setup(df)
 
-        if df is None:
-            st.warning("Sin datos")
-            continue
-
-        df = add_indicators(df)
-
+    if score >= 4:  # 🔥 FILTRO CLAVE
         precio = df['Close'].iloc[-1]
         atr = df['ATR'].iloc[-1]
 
-        signal = get_signal(df)
         stop, size = calcular_trade(precio, atr)
 
-        signals_log.append([ticker, signal, round(precio,2)])
-
-        st.markdown(f"### {ticker}")
-        st.metric("Precio", round(precio, 2))
-
-        if signal == "PULLBACK":
-            st.success("🟢 PULLBACK")
-        elif signal == "BREAKOUT":
-            st.info("🔵 BREAKOUT")
-        else:
-            st.warning("⚪ NEUTRAL")
-
-        st.write(f"Stop: {stop}")
-        st.write(f"Size: {size}")
+        results.append({
+            "Ticker": ticker,
+            "Señal": signal,
+            "Score": score,
+            "Precio": round(precio,2),
+            "Stop": stop,
+            "Size": size
+        })
 
 # -------------------
-# GRÁFICO PRINCIPAL
+# RESULTADOS
 # -------------------
-st.markdown("## 📊 Chart principal")
+if len(results) == 0:
+    st.warning("No hay oportunidades claras ahora")
+else:
+    df_res = pd.DataFrame(results)
 
-ticker_sel = st.selectbox("Seleccionar activo", TICKERS)
+    # ordenar por calidad
+    df_res = df_res.sort_values(by="Score", ascending=False)
 
-df = get_data(ticker_sel)
+    st.markdown("## 🚀 Top oportunidades")
 
-if df is not None:
-    df = add_indicators(df)
+    st.dataframe(df_res, use_container_width=True)
 
-    chart_df = df[['Close', 'EMA20', 'EMA50']].copy()
-    chart_df.columns = ['Precio', 'EMA20', 'EMA50']
+    # -------------------
+    # TOP 5 VISUAL
+    # -------------------
+    st.markdown("## 🏆 Top 5 setups")
 
-    st.line_chart(chart_df.tail(150))
+    top5 = df_res.head(5)
 
-# -------------------
-# TABLA SEÑALES
-# -------------------
-st.markdown("## 📡 Últimas señales")
+    cols = st.columns(len(top5))
 
-signals_df = pd.DataFrame(signals_log, columns=["Ticker", "Señal", "Precio"])
-st.dataframe(signals_df, use_container_width=True)
+    for i, row in top5.iterrows():
+        with cols[i % len(cols)]:
+            st.subheader(row["Ticker"])
 
-# -------------------
-# PANEL RIESGO
-# -------------------
-st.markdown("## ⚖️ Risk Overview")
+            st.metric("Precio", row["Precio"])
 
-total_positions = len([s for s in signals_log if s[1] != "NEUTRAL"])
-risk_used = total_positions * (CAPITAL * RIESGO)
+            if row["Señal"] == "PULLBACK":
+                st.success("🟢 PULLBACK")
+            else:
+                st.info("🔵 BREAKOUT")
 
-col1, col2, col3 = st.columns(3)
-
-col1.metric("Posiciones activas", total_positions)
-col2.metric("Riesgo usado", f"${risk_used:,.0f}")
-col3.metric("Riesgo disponible", f"${CAPITAL - risk_used:,.0f}")
+            st.write(f"Score: {row['Score']}")
+            st.write(f"Stop: {row['Stop']}")
+            st.write(f"Size: {row['Size']}")
