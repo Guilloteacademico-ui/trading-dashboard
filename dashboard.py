@@ -13,7 +13,7 @@ CAPITAL = 10000
 RIESGO = 0.01
 
 # -------------------
-# UNIVERSO (S&P500 dinámico)
+# UNIVERSO
 # -------------------
 @st.cache_data
 def get_sp500():
@@ -27,7 +27,7 @@ def get_sp500():
 @st.cache_data
 def get_data(ticker):
     try:
-        df = yf.download(ticker, interval="1d", period="6mo")
+        df = yf.download(ticker, period="6mo")
 
         if df is None or df.empty:
             return None
@@ -59,86 +59,89 @@ def add_indicators(df):
     tr = pd.concat([hl, hc, lc], axis=1).max(axis=1)
     df['ATR'] = tr.rolling(14).mean()
 
-    df['RET_5'] = df['Close'].pct_change(5)
-
     return df
 
 # -------------------
-# SCORING
+# LÓGICA TRADING
 # -------------------
-def score_setup(df):
+def analizar(df):
     last = df.iloc[-1]
     prev = df.iloc[-2]
 
+    señal = None
     score = 0
-    signal = "NEUTRAL"
 
+    # Tendencia
     if last['EMA20'] > last['EMA50']:
         score += 2
 
-    if last['Close'] < last['EMA20']:
-        score += 2
-        signal = "PULLBACK"
-
+    # Breakout
     if last['Close'] > prev['High']:
+        señal = "COMPRA"
         score += 3
-        signal = "BREAKOUT"
 
-    if last['RET_5'] > 0:
-        score += 1
+    # Pullback
+    elif last['Close'] < last['EMA20']:
+        señal = "COMPRA"
+        score += 2
 
-    return score, signal
+    return señal, score
 
 # -------------------
-# RIESGO
+# PLAN DE TRADE
 # -------------------
-def calcular_trade(precio, atr):
+def plan_trade(precio, atr):
     if pd.isna(atr) or atr <= 0:
         atr = precio * 0.02
 
     stop = precio - (1.2 * atr)
     riesgo = precio - stop
+
+    tp1 = precio + (riesgo * 1.5)
+    tp2 = precio + (riesgo * 3)
+
     size = (CAPITAL * RIESGO) / riesgo
 
-    return round(stop,2), int(max(1,size))
+    return round(stop,2), round(tp1,2), round(tp2,2), int(size)
 
 # -------------------
 # UI
 # -------------------
-st.title("🚀 Scanner Real - Top 5 USA")
+st.title("🚀 Scanner S&P500 - Top 10 oportunidades")
 
 tickers = get_sp500()
 
-results = []
+resultados = []
 
 progress = st.progress(0)
-total = len(tickers)
 
 # -------------------
-# SCAN MASIVO
+# SCAN
 # -------------------
-for i, ticker in enumerate(tickers[:200]):  # 🔴 limitamos a 200 para performance
+for i, ticker in enumerate(tickers[:200]):
     df = get_data(ticker)
 
     if df is None:
         continue
 
     df = add_indicators(df)
-    score, signal = score_setup(df)
 
-    if score >= 4:
+    señal, score = analizar(df)
+
+    if señal == "COMPRA" and score >= 4:
         precio = df['Close'].iloc[-1]
         atr = df['ATR'].iloc[-1]
 
-        stop, size = calcular_trade(precio, atr)
+        stop, tp1, tp2, size = plan_trade(precio, atr)
 
-        results.append({
+        resultados.append({
             "Ticker": ticker,
-            "Score": score,
-            "Señal": signal,
             "Precio": round(precio,2),
             "Stop": stop,
-            "Size": size
+            "TP1": tp1,
+            "TP2": tp2,
+            "Tamaño": size,
+            "Score": score
         })
 
     progress.progress((i+1)/200)
@@ -146,30 +149,31 @@ for i, ticker in enumerate(tickers[:200]):  # 🔴 limitamos a 200 para performa
 # -------------------
 # RESULTADOS
 # -------------------
-if len(results) == 0:
+if len(resultados) == 0:
     st.warning("No hay oportunidades claras ahora")
 else:
-    df_res = pd.DataFrame(results)
-    df_res = df_res.sort_values(by="Score", ascending=False)
+    df_res = pd.DataFrame(resultados)
+    df_res = df_res.sort_values(by="Score", ascending=False).head(10)
 
-    st.markdown("## 🏆 TOP 5 OPORTUNIDADES")
+    st.markdown("## 🏆 TOP 10 PARA COMPRAR AHORA")
 
-    top5 = df_res.head(5)
+    st.dataframe(df_res, use_container_width=True)
 
-    st.dataframe(top5, use_container_width=True)
-
+    # -------------------
+    # VISUAL CLARO
+    # -------------------
     cols = st.columns(5)
 
-    for i, row in top5.iterrows():
+    for i, row in df_res.iterrows():
         with cols[i % 5]:
             st.subheader(row["Ticker"])
-            st.metric("Precio", row["Precio"])
 
-            if row["Señal"] == "PULLBACK":
-                st.success("🟢 PULLBACK")
-            else:
-                st.info("🔵 BREAKOUT")
+            st.metric("💰 Comprar ahora", row["Precio"])
 
-            st.write(f"Score: {row['Score']}")
-            st.write(f"Stop: {row['Stop']}")
-            st.write(f"Size: {row['Size']}")
+            st.success(f"🎯 Vender parcial: {row['TP1']}")
+            st.info(f"🚀 Vender total: {row['TP2']}")
+
+            st.error(f"🛑 Stop: {row['Stop']}")
+
+            st.write(f"📦 Tamaño: {row['Tamaño']}")
+            st.write(f"📊 Score: {row['Score']}")
