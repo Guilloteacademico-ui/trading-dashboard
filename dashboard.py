@@ -1,10 +1,19 @@
 import streamlit as st
 import yfinance as yf
 import pandas as pd
-import ta
+
+from streamlit_autorefresh import st_autorefresh
+
+# -------------------
+# AUTO REFRESH
+# -------------------
+st_autorefresh(interval=60000, key="refresh")
 
 st.set_page_config(layout="wide")
 
+# -------------------
+# CONFIG
+# -------------------
 TICKERS = ["C", "GOLD", "CMCSA", "BTG", "ONC"]
 CAPITAL = 10000
 RIESGO = 0.01
@@ -20,14 +29,10 @@ def get_data(ticker):
         if df is None or df.empty:
             return None
 
-        # 🔴 FIX CLAVE: eliminar multi-index
         if isinstance(df.columns, pd.MultiIndex):
             df.columns = df.columns.get_level_values(0)
 
-        # asegurar columnas
         df = df[["Open", "High", "Low", "Close", "Volume"]]
-
-        # 🔴 convertir a float
         df = df.astype(float)
 
         df.dropna(inplace=True)
@@ -37,62 +42,62 @@ def get_data(ticker):
 
         return df
 
-    except Exception as e:
+    except:
         return None
 
 # -------------------
-# INDICADORES SIN LIB ta (más estable)
+# INDICADORES
 # -------------------
 def add_indicators(df):
-    try:
-        df['EMA20'] = df['Close'].ewm(span=20).mean()
-        df['EMA50'] = df['Close'].ewm(span=50).mean()
+    df['EMA20'] = df['Close'].ewm(span=20).mean()
+    df['EMA50'] = df['Close'].ewm(span=50).mean()
 
-        # 🔴 ATR manual (evita errores de ta)
-        high_low = df['High'] - df['Low']
-        high_close = (df['High'] - df['Close'].shift()).abs()
-        low_close = (df['Low'] - df['Close'].shift()).abs()
+    # ATR manual (estable)
+    high_low = df['High'] - df['Low']
+    high_close = (df['High'] - df['Close'].shift()).abs()
+    low_close = (df['Low'] - df['Close'].shift()).abs()
 
-        tr = pd.concat([high_low, high_close, low_close], axis=1).max(axis=1)
-        df['ATR'] = tr.rolling(14).mean()
+    tr = pd.concat([high_low, high_close, low_close], axis=1).max(axis=1)
+    df['ATR'] = tr.rolling(14).mean()
 
-        return df
-
-    except:
-        return df
+    return df
 
 # -------------------
-# SEÑAL
+# SEÑALES MEJORADAS
 # -------------------
 def get_signal(df):
     try:
         last = df.iloc[-1]
+        prev = df.iloc[-2]
 
-        if last['Close'] > last['EMA50'] and last['Close'] < last['EMA20']:
+        tendencia = "ALCISTA" if last['EMA20'] > last['EMA50'] else "BAJISTA"
+
+        if tendencia == "ALCISTA" and last['Close'] < last['EMA20']:
             return "BUY_PULLBACK"
 
-        if last['Close'] > df['High'].rolling(20).max().iloc[-2]:
+        if last['Close'] > prev['High']:
             return "BUY_BREAKOUT"
 
-        return "—"
+        return "SIN_SEÑAL"
     except:
-        return "—"
+        return "SIN_SEÑAL"
 
 # -------------------
 # RIESGO
 # -------------------
 def calcular_trade(precio, atr):
     try:
-        if pd.isna(atr) or atr == 0:
-            return 0, 0
+        if pd.isna(atr) or atr <= 0:
+            atr = precio * 0.02  # fallback
 
-        stop = precio - (1.3 * atr)
+        stop = precio - (1.2 * atr)
         riesgo = precio - stop
 
-        if riesgo <= 0:
-            return 0, 0
+        capital_riesgo = CAPITAL * RIESGO
+        size = capital_riesgo / riesgo
 
-        size = (CAPITAL * RIESGO) / riesgo
+        if size < 1:
+            size = 1
 
         return round(stop, 2), int(size)
     except:
@@ -101,7 +106,7 @@ def calcular_trade(precio, atr):
 # -------------------
 # UI
 # -------------------
-st.title("📊 Trading Dashboard")
+st.title("📊 Panel de Trading")
 
 cols = st.columns(len(TICKERS))
 
@@ -129,15 +134,21 @@ for i, ticker in enumerate(TICKERS):
 
         st.metric("Precio", round(precio, 2))
 
-        if signal != "—":
-            st.success(signal)
+        # Señales visuales
+        if signal == "BUY_PULLBACK":
+            st.success("🟢 PULLBACK")
+        elif signal == "BUY_BREAKOUT":
+            st.info("🔵 BREAKOUT")
         else:
-            st.warning("Sin señal")
+            st.warning("🟡 SIN SEÑAL")
 
         st.write(f"🛑 Stop: {stop}")
-        st.write(f"📦 Size: {size}")
+        st.write(f"📦 Tamaño: {size}")
 
+        # Gráfico FIX
         try:
-            st.line_chart(df[['Close', 'EMA20', 'EMA50']])
+            chart_df = df[['Close', 'EMA20', 'EMA50']].copy()
+            chart_df.columns = ['Precio', 'EMA20', 'EMA50']
+            st.line_chart(chart_df.tail(100))
         except:
-            st.write("Sin gráfico")
+            st.write("No se pudo generar gráfico")
