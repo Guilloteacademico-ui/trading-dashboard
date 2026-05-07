@@ -5,15 +5,12 @@ import ta
 
 st.set_page_config(layout="wide")
 
-# -------------------
-# CONFIG
-# -------------------
 TICKERS = ["C", "GOLD", "CMCSA", "BTG", "ONC"]
 CAPITAL = 10000
 RIESGO = 0.01
 
 # -------------------
-# DATA (ROBUSTO)
+# DATA ROBUSTO
 # -------------------
 @st.cache_data
 def get_data(ticker):
@@ -23,40 +20,46 @@ def get_data(ticker):
         if df is None or df.empty:
             return None
 
-        required_cols = ["Open", "High", "Low", "Close", "Volume"]
-        for col in required_cols:
-            if col not in df.columns:
-                return None
+        # 🔴 FIX CLAVE: eliminar multi-index
+        if isinstance(df.columns, pd.MultiIndex):
+            df.columns = df.columns.get_level_values(0)
+
+        # asegurar columnas
+        df = df[["Open", "High", "Low", "Close", "Volume"]]
+
+        # 🔴 convertir a float
+        df = df.astype(float)
 
         df.dropna(inplace=True)
 
-        if len(df) < 20:
+        if len(df) < 30:
             return None
 
         return df
 
-    except:
+    except Exception as e:
         return None
 
 # -------------------
-# INDICADORES (ROBUSTO)
+# INDICADORES SIN LIB ta (más estable)
 # -------------------
 def add_indicators(df):
-    if df is None or df.empty:
+    try:
+        df['EMA20'] = df['Close'].ewm(span=20).mean()
+        df['EMA50'] = df['Close'].ewm(span=50).mean()
+
+        # 🔴 ATR manual (evita errores de ta)
+        high_low = df['High'] - df['Low']
+        high_close = (df['High'] - df['Close'].shift()).abs()
+        low_close = (df['Low'] - df['Close'].shift()).abs()
+
+        tr = pd.concat([high_low, high_close, low_close], axis=1).max(axis=1)
+        df['ATR'] = tr.rolling(14).mean()
+
         return df
 
-    df['EMA20'] = df['Close'].ewm(span=20).mean()
-    df['EMA50'] = df['Close'].ewm(span=50).mean()
-
-    try:
-        atr = ta.volatility.AverageTrueRange(
-            df['High'], df['Low'], df['Close'], window=14
-        )
-        df['ATR'] = atr.average_true_range()
     except:
-        df['ATR'] = 0
-
-    return df
+        return df
 
 # -------------------
 # SEÑAL
@@ -80,7 +83,7 @@ def get_signal(df):
 # -------------------
 def calcular_trade(precio, atr):
     try:
-        if atr == 0:
+        if pd.isna(atr) or atr == 0:
             return 0, 0
 
         stop = precio - (1.3 * atr)
@@ -90,6 +93,7 @@ def calcular_trade(precio, atr):
             return 0, 0
 
         size = (CAPITAL * RIESGO) / riesgo
+
         return round(stop, 2), int(size)
     except:
         return 0, 0
@@ -108,16 +112,16 @@ for i, ticker in enumerate(TICKERS):
         df = get_data(ticker)
 
         if df is None:
-            st.warning("Sin datos disponibles")
+            st.warning("Sin datos")
             continue
 
         df = add_indicators(df)
 
         try:
-            precio = df['Close'].iloc[-1]
-            atr = df['ATR'].iloc[-1]
+            precio = float(df['Close'].iloc[-1])
+            atr = float(df['ATR'].iloc[-1])
         except:
-            st.warning("Error en datos")
+            st.warning("Error datos")
             continue
 
         signal = get_signal(df)
@@ -133,9 +137,7 @@ for i, ticker in enumerate(TICKERS):
         st.write(f"🛑 Stop: {stop}")
         st.write(f"📦 Size: {size}")
 
-        # gráfico seguro
         try:
             st.line_chart(df[['Close', 'EMA20', 'EMA50']])
         except:
-            st.write("No se pudo generar gráfico")
-    
+            st.write("Sin gráfico")
