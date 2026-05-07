@@ -12,22 +12,20 @@ st.set_page_config(layout="wide")
 CAPITAL = 10000
 RIESGO = 0.01
 
-# -------------------
-# UNIVERSO
-# -------------------
-@st.cache_data
-def get_sp500():
-    url = "https://en.wikipedia.org/wiki/List_of_S%26P_500_companies"
-    table = pd.read_html(url)[0]
-    return table['Symbol'].tolist()
+# 🔴 Universo robusto (evitamos scraping)
+TICKERS = [
+    "AAPL","MSFT","NVDA","AMZN","META","TSLA","AMD","GOOGL","NFLX","BABA",
+    "JPM","XOM","CVX","BA","DIS","UBER","COIN","PLTR","SHOP","SNOW",
+    "INTC","PYPL","CRM","ADBE","ORCL","CSCO","PEP","KO","MCD","WMT"
+]
 
 # -------------------
 # DATA
 # -------------------
-@st.cache_data
+@st.cache_data(ttl=300)
 def get_data(ticker):
     try:
-        df = yf.download(ticker, period="6mo")
+        df = yf.download(ticker, period="6mo", interval="1d", progress=False)
 
         if df is None or df.empty:
             return None
@@ -38,7 +36,7 @@ def get_data(ticker):
         df = df[["Open","High","Low","Close","Volume"]].astype(float)
         df.dropna(inplace=True)
 
-        if len(df) < 50:
+        if len(df) < 30:
             return None
 
         return df
@@ -62,25 +60,22 @@ def add_indicators(df):
     return df
 
 # -------------------
-# LÓGICA TRADING
+# LÓGICA
 # -------------------
 def analizar(df):
     last = df.iloc[-1]
     prev = df.iloc[-2]
 
-    señal = None
     score = 0
+    señal = None
 
-    # Tendencia
     if last['EMA20'] > last['EMA50']:
         score += 2
 
-    # Breakout
     if last['Close'] > prev['High']:
         señal = "COMPRA"
         score += 3
 
-    # Pullback
     elif last['Close'] < last['EMA20']:
         señal = "COMPRA"
         score += 2
@@ -88,7 +83,7 @@ def analizar(df):
     return señal, score
 
 # -------------------
-# PLAN DE TRADE
+# PLAN
 # -------------------
 def plan_trade(precio, atr):
     if pd.isna(atr) or atr <= 0:
@@ -97,28 +92,22 @@ def plan_trade(precio, atr):
     stop = precio - (1.2 * atr)
     riesgo = precio - stop
 
-    tp1 = precio + (riesgo * 1.5)
-    tp2 = precio + (riesgo * 3)
+    tp1 = precio + riesgo * 1.5
+    tp2 = precio + riesgo * 3
 
     size = (CAPITAL * RIESGO) / riesgo
 
-    return round(stop,2), round(tp1,2), round(tp2,2), int(size)
+    return round(stop,2), round(tp1,2), round(tp2,2), int(max(1,size))
 
 # -------------------
 # UI
 # -------------------
-st.title("🚀 Scanner S&P500 - Top 10 oportunidades")
-
-tickers = get_sp500()
+st.title("🚀 Scanner de Oportunidades USA")
 
 resultados = []
 
-progress = st.progress(0)
-
-# -------------------
-# SCAN
-# -------------------
-for i, ticker in enumerate(tickers[:200]):
+# 🔴 límite controlado (clave)
+for ticker in TICKERS:
     df = get_data(ticker)
 
     if df is None:
@@ -137,17 +126,16 @@ for i, ticker in enumerate(tickers[:200]):
         resultados.append({
             "Ticker": ticker,
             "Precio": round(precio,2),
+            "Comprar": round(precio,2),
             "Stop": stop,
-            "TP1": tp1,
-            "TP2": tp2,
+            "Vender TP1": tp1,
+            "Vender TP2": tp2,
             "Tamaño": size,
             "Score": score
         })
 
-    progress.progress((i+1)/200)
-
 # -------------------
-# RESULTADOS
+# OUTPUT
 # -------------------
 if len(resultados) == 0:
     st.warning("No hay oportunidades claras ahora")
@@ -159,21 +147,16 @@ else:
 
     st.dataframe(df_res, use_container_width=True)
 
-    # -------------------
-    # VISUAL CLARO
-    # -------------------
     cols = st.columns(5)
 
     for i, row in df_res.iterrows():
         with cols[i % 5]:
             st.subheader(row["Ticker"])
 
-            st.metric("💰 Comprar ahora", row["Precio"])
+            st.metric("💰 Comprar ahora", row["Comprar"])
 
-            st.success(f"🎯 Vender parcial: {row['TP1']}")
-            st.info(f"🚀 Vender total: {row['TP2']}")
+            st.success(f"🎯 TP1: {row['Vender TP1']}")
+            st.info(f"🚀 TP2: {row['Vender TP2']}")
 
             st.error(f"🛑 Stop: {row['Stop']}")
-
             st.write(f"📦 Tamaño: {row['Tamaño']}")
-            st.write(f"📊 Score: {row['Score']}")
